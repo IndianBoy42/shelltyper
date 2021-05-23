@@ -1,20 +1,24 @@
-use itertools::{izip, Itertools};
-use std::borrow::Cow;
-use std::io::stdout;
-use std::ops::Range;
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use std::time::{Duration, Instant};
+mod dict;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use itertools::{izip, Itertools};
+use rand::distributions::Uniform;
+use rand::prelude::Distribution;
+use rand::thread_rng;
+use std::borrow::Cow;
+use std::io::stdout;
+use std::ops::Range;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::{Duration, Instant};
 use tui::layout::{Constraint, Layout, Rect};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans};
-use tui::widgets::{self, Block, BorderType, Borders, Paragraph, Widget};
+use tui::widgets::{self, Block, BorderType, Borders, Paragraph, Wrap};
 use tui::Frame;
 use tui::{backend::CrosstermBackend, Terminal};
 
@@ -155,7 +159,7 @@ struct App {
 }
 impl App {
     fn new() -> App {
-        App {
+        let mut app = App {
             target_type: TargetStringType::Infinite,
             running: TestState::Pre,
             target_str: String::new(),
@@ -164,26 +168,29 @@ impl App {
             enterd_words: Vec::new(),
             start: Instant::now(),
             now: Instant::now(),
-        }
+        };
+        app.new_target_string(TargetStringType::Infinite);
+        app
     }
 
     fn new_target_string(&mut self, ty: TargetStringType) {
-        match ty {
-            TargetStringType::Infinite => {
-                self.target_str = "an example infinite string ...".to_owned();
-            }
-            TargetStringType::Words(_) => {
-                self.target_str = "an example finite string".to_owned();
-            }
-        }
-        self.enterd_str = String::with_capacity(self.target_str.len());
+        let words = match ty {
+            TargetStringType::Infinite => 100, // TODO:LOL
+            TargetStringType::Words(n) => n,
+        };
+        let mut rng = thread_rng();
+        let dict = dict::ENGLISH;
+        let choose = Uniform::from(0..dict.len());
+        self.target_str = (0..words).map(|_| dict[choose.sample(&mut rng)]).join(" ");
 
+        self.enterd_str = String::with_capacity(self.target_str.len());
         self.target_words = self
             .target_str
             .char_indices()
-            .filter(|&(i, c)| c == ' ')
-            .map(|(i, c)| i)
+            .filter(|&(_, c)| c == ' ')
+            .map(|(i, _)| i + 1)
             .collect();
+        // self.target_words.push(self.target_words.len());
         self.enterd_words = Vec::with_capacity(self.target_words.len());
         self.enterd_words.push(0);
     }
@@ -207,13 +214,14 @@ impl App {
                 *self.enterd_words.last_mut().unwrap() += 1;
                 if self.enterd_words.len() == self.target_words.len() {
                     self.running = TestState::Post;
+                } else {
+                    self.enterd_words.push(*self.enterd_words.last().unwrap());
                 }
-                self.enterd_words.push(0);
             }
             KeyCode::Char(c) => {
                 if self.running != TestState::Post {
                     self.enterd_str.push(c);
-                    *self.enterd_words.last_mut().unwrap() += 1;
+                    *self.enterd_words.last_mut().unwrap() = self.enterd_str.len();
                     if self.running == TestState::Pre {
                         self.running = TestState::Running;
                         self.start = Instant::now();
@@ -226,7 +234,7 @@ impl App {
                         self.enterd_str.push(' ');
                     }
                     Some(c) => {
-                        *self.enterd_words.last_mut().unwrap() += 1;
+                        *self.enterd_words.last_mut().unwrap() -= 1;
                     }
                     None => {
                         // TODO: reset timer? nah
@@ -274,12 +282,13 @@ impl App {
 
     fn title_widget(&self, f: &mut Frame<Backend>, size: Rect) {
         let par = Paragraph::new(vec![Spans::from(vec![
-            Span::raw("Hello World\n"),
+            Span::raw("Hello World "),
             Span::styled(
                 "This is stylish",
                 Style::default().fg(Color::Green).bg(Color::Red),
             ),
-        ])]);
+        ])])
+        .wrap(Wrap { trim: false });
         let block = Block::default()
             .title("Title")
             .borders(Borders::ALL)
@@ -302,62 +311,29 @@ impl App {
         let inner = block.inner(size);
         let width = inner.width;
 
-        let completed_word_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+        let completed_word_style = Style::default().bg(Color::Black).fg(Color::White);
         let completed_part_style = Style::default().bg(Color::Black).fg(Color::Green);
         let wrong_part_style = Style::default().bg(Color::Black).fg(Color::Red);
-        let incomplete_part_style = Style::default().bg(Color::Black).fg(Color::White);
+        let incomplete_part_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
         let future_word_style = Style::default().fg(Color::Gray);
 
-        fn lens_to_ranges(state: &mut usize, &len: &usize) -> Option<Range<usize>> {
-            let begin = std::mem::replace(state, *state + len);
-            let end = *state;
-            Some(begin..end)
+        // fn lens_to_ranges(state: &mut usize, &len: &usize) -> Option<Range<usize>> {
+        // let begin = std::mem::replace(state, *state + len);
+        // let end = *state;
+        // Some(begin..end)
+        fn lens_to_ranges(start: &mut usize, &end: &usize) -> Option<Range<usize>> {
+            Some(std::mem::replace(start, end)..end)
         }
         let target_words = self.target_words.iter().scan(0, lens_to_ranges);
         let enterd_words = self.enterd_words.iter().scan(0, lens_to_ranges);
 
-        /// (complete, wrong, incomplete)
-        fn merge_word<'a>(target: &'a str, enterd: &'a str) -> (&'a str, &'a str, &'a str) {
-            let first_non_match = izip!(target.char_indices(), enterd.char_indices())
-                .find(|&((_, t), (_, u))| t != u);
-            if let Some(((i, _), (j, _))) = first_non_match {
-                let mut s = String::with_capacity(target.len() + enterd.len());
-                s.push_str(&enterd);
-                s.push_str(&target[i..]);
-                (&enterd[..j], &enterd[j..], &target[i..])
-            } else if target.len() >= enterd.len() {
-                let j = enterd.len();
-                (enterd, "", &target[j..])
-            } else {
-                let i = target.len();
-                (target, &enterd[i..], "")
-            }
-        }
-        fn merge_word2<'a>(target: &'a str, enterd: &'a str) -> (Cow<'a, str>, usize, usize) {
-            let first_non_match = izip!(target.char_indices(), enterd.char_indices())
-                .find(|&((_, t), (_, u))| t != u);
-            if let Some(((i, _), (_j, _))) = first_non_match {
-                let mut s = String::with_capacity(target.len() + enterd.len());
-                s.push_str(&enterd);
-                s.push_str(&target[i..]);
-                (Cow::Owned(s), i, enterd.len())
-                //     correct                   wrong          incomplete
-                // [enterd[..j] == target[..i]] [enterd[j..]] [target[i...]]
-                //                             ^ i == j      ^ enterd.len()
-            } else if target.len() >= enterd.len() {
-                (Cow::Borrowed(target), enterd.len(), enterd.len())
-                // i = j = enterd.len()
-                //     correct                   incomplete (extra)
-                // [enterd[..j] == target[..i]] [target[i..]]
-                //                             ^ i == j      ^ target.len()
-            } else {
-                (Cow::Borrowed(enterd), target.len(), enterd.len())
-                // i = j = target.len()
-                //     correct                   wrong (extra)
-                // [enterd[..j] == target[..i]] [enterd[i..]]
-                //                             ^ i == j      ^ enterd.len()
-            }
-        }
+        // let target_words_dbg = format!("{:#?}", target_words.clone().collect_vec());
+        // if target_words_dbg.len() > 2 {
+        //     dbg!(target_words_dbg);
+        // };
+
+        // TODO: wrapping might be able to be done by this
+        // https://docs.rs/tui/0.15.0/tui/widgets/struct.Wrap.html
 
         let (lines, _) = target_words
             .zip_longest(enterd_words)
@@ -380,7 +356,7 @@ impl App {
                     let wordlen = complete.len() + wrong.len() + incomplete.len();
 
                     let totallen = wordlen + linelen;
-                    let len = if totallen > width.into() {
+                    let len = if totallen < width.into() || false {
                         let line = lines.last_mut().unwrap();
                         if complete.len() > 0 {
                             line.push(spcomplete)
@@ -399,6 +375,8 @@ impl App {
                     (lines, len)
                 },
             );
+
+        // lines.push(Spans::from(Span::raw(target_words_dbg)));
 
         let lines = lines
             .into_iter()
@@ -451,5 +429,48 @@ impl App {
             f.render_widget(widgets::Clear, chunks[1])
         };
         f.render_widget(block("Graph"), chunks[1]);
+    }
+}
+
+/// (complete, wrong, incomplete)
+fn merge_word<'a>(target: &'a str, enterd: &'a str) -> (&'a str, &'a str, &'a str) {
+    let first_non_match =
+        izip!(target.char_indices(), enterd.char_indices()).find(|&((_, t), (_, u))| t != u);
+    if let Some(((i, _), (j, _))) = first_non_match {
+        let mut s = String::with_capacity(target.len() + enterd.len());
+        s.push_str(&enterd);
+        s.push_str(&target[i..]);
+        (&enterd[..j], &enterd[j..], &target[i..])
+    } else if target.len() >= enterd.len() {
+        let j = enterd.len();
+        (enterd, "", &target[j..])
+    } else {
+        let i = target.len();
+        (target, &enterd[i..], "")
+    }
+}
+fn merge_word2<'a>(target: &'a str, enterd: &'a str) -> (Cow<'a, str>, usize, usize) {
+    let first_non_match =
+        izip!(target.char_indices(), enterd.char_indices()).find(|&((_, t), (_, u))| t != u);
+    if let Some(((i, _), (_j, _))) = first_non_match {
+        let mut s = String::with_capacity(target.len() + enterd.len());
+        s.push_str(&enterd);
+        s.push_str(&target[i..]);
+        (Cow::Owned(s), i, enterd.len())
+        //     correct                   wrong          incomplete
+        // [enterd[..j] == target[..i]] [enterd[j..]] [target[i...]]
+        //                             ^ i == j      ^ enterd.len()
+    } else if target.len() >= enterd.len() {
+        (Cow::Borrowed(target), enterd.len(), enterd.len())
+        // i = j = enterd.len()
+        //     correct                   incomplete (extra)
+        // [enterd[..j] == target[..i]] [target[i..]]
+        //                             ^ i == j      ^ target.len()
+    } else {
+        (Cow::Borrowed(enterd), target.len(), enterd.len())
+        // i = j = target.len()
+        //     correct                   wrong (extra)
+        // [enterd[..j] == target[..i]] [enterd[i..]]
+        //                             ^ i == j      ^ enterd.len()
     }
 }
