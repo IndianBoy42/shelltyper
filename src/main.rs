@@ -17,11 +17,13 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 use tui::layout::{Constraint, Layout, Rect};
-use tui::style::{Color, Style};
+use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans};
-use tui::widgets::{self, Block, BorderType, Borders, Paragraph, Wrap};
-use tui::Frame;
+use tui::widgets::{
+    self, Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, LineGauge, Paragraph, Wrap,
+};
 use tui::{backend::CrosstermBackend, Terminal};
+use tui::{symbols, Frame};
 
 type Backend = CrosstermBackend<std::io::Stdout>;
 
@@ -102,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    todo!("Finish this")
+    Ok(())
 }
 
 fn input_handling_thread(_terminal: &Terminal<Backend>) -> Receiver<Event> {
@@ -156,19 +158,31 @@ struct App {
     enterd_words: Vec<usize>,
     running: TestState,
     start: Instant,
+    prev_hist: Instant,
     now: Instant,
+    wpm: f64,
+    accuracy: f64,
+    accuracy_history: Vec<(f64, f64)>,
+    wpm_history: Vec<(f64, f64)>,
+    progress: f64,
 }
 impl App {
     fn new() -> App {
         let mut app = App {
             target_type: TargetStringType::Infinite,
-            running: TestState::Pre,
             target_str: String::new(),
             enterd_str: String::new(),
             target_words: Vec::new(),
             enterd_words: Vec::new(),
+            running: TestState::Pre,
             start: Instant::now(),
+            prev_hist: Instant::now(),
             now: Instant::now(),
+            wpm: 0.,
+            accuracy: 0.,
+            accuracy_history: Vec::with_capacity(100),
+            wpm_history: Vec::with_capacity(100),
+            progress: 0.,
         };
         app.new_target_string(TargetStringType::Infinite);
         app
@@ -176,7 +190,7 @@ impl App {
 
     fn new_target_string(&mut self, ty: TargetStringType) {
         let words = match ty {
-            TargetStringType::Infinite => 100, // TODO:LOL
+            TargetStringType::Infinite => 30, // TODO:LOL
             TargetStringType::Words(n) => n,
         };
         let mut rng = thread_rng();
@@ -204,20 +218,42 @@ impl App {
         if self.running == TestState::Running {
             // TODO: update stats
             self.now = Instant::now();
+
+            let tws = self.get_target_words().collect_vec();
+            let ews = self.get_enterd_words().collect_vec();
+            let (correct, total) = izip!(tws, ews).fold((0, 0), |(corr, tot), (t, e)| {
+                (
+                    corr + if t == e { 1 } else { 0 },
+                    tot + if t.len() == 0 { 0 } else { 1 },
+                )
+            });
+            let (correct, total) = (correct as f64, total as f64);
+            let tspan = (self.now - self.start).as_secs_f64() / 60.;
+            self.accuracy = correct * 100. / total; // FIXME: accuracy has some weirdness
+            self.progress = total * 100. / self.target_words.len() as f64;
+            self.wpm = correct / tspan;
+            if (self.now - self.prev_hist).as_millis() > 100 {
+                self.accuracy_history.push((self.progress, self.accuracy));
+                self.wpm_history.push((self.progress, self.wpm));
+
+                self.prev_hist = Instant::now();
+            }
         }
         Ok(())
     }
 
     fn on_key(&mut self, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
         let ok = match key {
-            KeyCode::Char(' ') | KeyCode::Right | KeyCode::Enter | KeyCode::Tab => {
-                if self.enterd_str.chars().last() != Some(' ') {
-                    self.enterd_str.push(' ');
-                    *self.enterd_words.last_mut().unwrap() += 1;
-                    if self.enterd_words.len() == self.target_words.len() {
-                        self.running = TestState::Post;
-                    } else {
-                        self.enterd_words.push(*self.enterd_words.last().unwrap());
+            KeyCode::Char(' ') | KeyCode::Right | KeyCode::Enter => {
+                if self.running == TestState::Running {
+                    if self.enterd_str.chars().last() != Some(' ') {
+                        self.enterd_str.push(' ');
+                        *self.enterd_words.last_mut().unwrap() += 1;
+                        if self.enterd_words.len() == self.target_words.len() {
+                            self.running = TestState::Post;
+                        } else {
+                            self.enterd_words.push(*self.enterd_words.last().unwrap());
+                        }
                     }
                 }
             }
@@ -229,6 +265,8 @@ impl App {
                         self.running = TestState::Running;
                         self.start = Instant::now();
                         self.now = self.start;
+                        self.prev_hist = self.start;
+                        self.accuracy_history.clear();
                     }
                 }
             }
@@ -237,7 +275,7 @@ impl App {
                     Some(' ') => {
                         self.enterd_str.push(' ');
                     }
-                    Some(c) => {
+                    Some(_) => {
                         *self.enterd_words.last_mut().unwrap() -= 1;
                     }
                     None => {
@@ -250,6 +288,9 @@ impl App {
                 self.running = TestState::Pre;
                 self.now = Instant::now();
                 self.new_target_string(TargetStringType::Infinite)
+            }
+            KeyCode::Tab => {
+                self.running = TestState::Post;
             }
             // TODO: any more functions needed?
             KeyCode::Left => {}
@@ -274,14 +315,14 @@ impl App {
             .direction(tui::layout::Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Min(3 + 5),
-                Constraint::Max(3 + 5),
+                Constraint::Length(3 + 10),
+                Constraint::Min(3 + 3),
             ])
             .split(f.size());
 
         self.title_widget(f, chunks[0]);
-        self.text_widget(f, chunks[1]);
-        self.stats_widget(f, chunks[2]);
+        self.stats_widget(f, chunks[1]);
+        self.text_widget(f, chunks[2]);
     }
 
     fn get_target_words(&self) -> impl Iterator<Item = &str> {
@@ -367,7 +408,14 @@ impl App {
             .fold(
                 (vec![vec![]], 0),
                 |(mut lines, linelen), (complete, wrong, incomplete)| {
-                    let spcomplete = Span::styled(complete, completed_word_style);
+                    let spcomplete = Span::styled(
+                        complete,
+                        if wrong.len() == 0 && incomplete.len() == 0 {
+                            completed_word_style
+                        } else {
+                            completed_part_style
+                        },
+                    );
                     let spwrong = Span::styled(wrong, wrong_part_style);
                     let spincomplete = Span::styled(incomplete, incomplete_part_style);
 
@@ -444,14 +492,10 @@ impl App {
                 f.render_widget(widgets::Clear, chunks[0])
             };
             let frame = block("WPM");
-            let tws = self.get_target_words().collect_vec();
-            let ews = self.get_enterd_words().collect_vec();
-            let correct = izip!(tws, ews).filter(|(x, y)| x == y).count() as f64;
-            let tspan = (self.now - self.start).as_secs_f64() / 60.;
             let par = Paragraph::new(vec![
-                Spans::from(Span::raw("Hello world")),                     //
-                Spans::from(Span::raw("Hello world")),                     //
-                Spans::from(Span::raw(format!("{:.0}", correct / tspan))), //
+                Spans::from(Span::raw(format!("{:.0}", self.wpm))), //
+                Spans::from(Span::raw(format!("{:.0}%", self.accuracy))), //
+                Spans::from(Span::raw(format!("{:.0}%", self.progress))), //
             ])
             .block(frame)
             .wrap(Wrap { trim: false });
@@ -462,8 +506,72 @@ impl App {
             if self.running == TestState::Running {
                 f.render_widget(widgets::Clear, chunks[1])
             };
+
+            let oarea = chunks[1];
             let frame = block("Graph");
-            f.render_widget(block("Graph"), chunks[1]);
+            let area = frame.inner(oarea);
+
+            let chunks = Layout::default()
+                .direction(tui::layout::Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(area);
+
+            let progress = LineGauge::default()
+                //.block(Block::default().borders(Borders::ALL).title("Progress"))
+                .gauge_style(
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .line_set(symbols::line::THICK)
+                .ratio(self.progress / 100.);
+            f.render_widget(progress, chunks[0]);
+
+            let datasets = vec![
+                Dataset::default()
+                    .name("accuracy")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Magenta))
+                    .data(&self.accuracy_history),
+                Dataset::default()
+                    .name("wpm")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(&self.wpm_history),
+            ];
+            let line_graph = Chart::new(datasets)
+                .x_axis(
+                    Axis::default()
+                        // .title(Span::styled("X Axis", Style::default().fg(Color::Red)))
+                        .style(Style::default().fg(Color::White))
+                        .bounds([0.0, 100.0])
+                        .labels(
+                            ["0.0", "50.0", "100.0"]
+                                .iter()
+                                .cloned()
+                                .map(Span::from)
+                                .collect(),
+                        ),
+                )
+                .y_axis(
+                    Axis::default()
+                        // .title(Span::styled("Y Axis", Style::default().fg(Color::Red)))
+                        .style(Style::default().fg(Color::White))
+                        .bounds([0.0, 100.0])
+                        .labels(
+                            ["0.0", "50.0", "100.0"]
+                                .iter()
+                                .cloned()
+                                .map(Span::from)
+                                .collect(),
+                        ),
+                );
+            f.render_widget(line_graph, chunks[1]);
+
+            f.render_widget(frame, oarea);
         }
     }
 }
@@ -483,31 +591,6 @@ fn merge_word<'a>(target: &'a str, enterd: &'a str) -> (&'a str, &'a str, &'a st
     } else {
         let i = target.len();
         (target, &enterd[i..], "")
-    }
-}
-fn merge_word2<'a>(target: &'a str, enterd: &'a str) -> (Cow<'a, str>, usize, usize) {
-    let first_non_match =
-        izip!(target.char_indices(), enterd.char_indices()).find(|&((_, t), (_, u))| t != u);
-    if let Some(((i, _), (_j, _))) = first_non_match {
-        let mut s = String::with_capacity(target.len() + enterd.len());
-        s.push_str(&enterd);
-        s.push_str(&target[i..]);
-        (Cow::Owned(s), i, enterd.len())
-        //     correct                   wrong          incomplete
-        // [enterd[..j] == target[..i]] [enterd[j..]] [target[i...]]
-        //                             ^ i == j      ^ enterd.len()
-    } else if target.len() >= enterd.len() {
-        (Cow::Borrowed(target), enterd.len(), enterd.len())
-        // i = j = enterd.len()
-        //     correct                   incomplete (extra)
-        // [enterd[..j] == target[..i]] [target[i..]]
-        //                             ^ i == j      ^ target.len()
-    } else {
-        (Cow::Borrowed(enterd), target.len(), enterd.len())
-        // i = j = target.len()
-        //     correct                   wrong (extra)
-        // [enterd[..j] == target[..i]] [enterd[i..]]
-        //                             ^ i == j      ^ enterd.len()
     }
 }
 
