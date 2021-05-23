@@ -1,0 +1,16 @@
+[package]
+name = "shelltyper"
+version = "0.1.0"
+authors = ["Anshuman <amedhi@connect.ust.hk>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crossterm = "0.19.0"
+itertools = "0.10.0"
+pico-args = "0.4.1"
+
+[dependencies.tui]
+version = "0.15.0"
+features = ["crossterm"]
