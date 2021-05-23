@@ -10,6 +10,7 @@ use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand::thread_rng;
 use std::borrow::Cow;
+use std::fmt::format;
 use std::io::stdout;
 use std::ops::Range;
 use std::sync::mpsc::{self, Receiver};
@@ -210,12 +211,14 @@ impl App {
     fn on_key(&mut self, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
         let ok = match key {
             KeyCode::Char(' ') | KeyCode::Right | KeyCode::Enter | KeyCode::Tab => {
-                self.enterd_str.push(' ');
-                *self.enterd_words.last_mut().unwrap() += 1;
-                if self.enterd_words.len() == self.target_words.len() {
-                    self.running = TestState::Post;
-                } else {
-                    self.enterd_words.push(*self.enterd_words.last().unwrap());
+                if self.enterd_str.chars().last() != Some(' ') {
+                    self.enterd_str.push(' ');
+                    *self.enterd_words.last_mut().unwrap() += 1;
+                    if self.enterd_words.len() == self.target_words.len() {
+                        self.running = TestState::Post;
+                    } else {
+                        self.enterd_words.push(*self.enterd_words.last().unwrap());
+                    }
                 }
             }
             KeyCode::Char(c) => {
@@ -225,6 +228,7 @@ impl App {
                     if self.running == TestState::Pre {
                         self.running = TestState::Running;
                         self.start = Instant::now();
+                        self.now = self.start;
                     }
                 }
             }
@@ -280,11 +284,37 @@ impl App {
         self.stats_widget(f, chunks[2]);
     }
 
+    fn get_target_words(&self) -> impl Iterator<Item = &str> {
+        self.target_words
+            .iter()
+            .scan(0, lens_to_ranges)
+            .map(move |rng| &self.target_str[rng])
+    }
+    fn get_enterd_words(&self) -> impl Iterator<Item = &str> {
+        self.enterd_words
+            .iter()
+            .scan(0, lens_to_ranges)
+            .map(move |rng| &self.enterd_str[rng])
+    }
+
     fn title_widget(&self, f: &mut Frame<Backend>, size: Rect) {
         let par = Paragraph::new(vec![Spans::from(vec![
             Span::raw("Hello World "),
             Span::styled(
-                "This is stylish",
+                format!(
+                    "{}",
+                    match self.running {
+                        TestState::Pre => {
+                            "Ready to Go"
+                        }
+                        TestState::Running => {
+                            "Test Running"
+                        }
+                        TestState::Post => {
+                            "Test Complete"
+                        }
+                    }
+                ),
                 Style::default().fg(Color::Green).bg(Color::Red),
             ),
         ])])
@@ -317,20 +347,8 @@ impl App {
         let incomplete_part_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
         let future_word_style = Style::default().fg(Color::Gray);
 
-        // fn lens_to_ranges(state: &mut usize, &len: &usize) -> Option<Range<usize>> {
-        // let begin = std::mem::replace(state, *state + len);
-        // let end = *state;
-        // Some(begin..end)
-        fn lens_to_ranges(start: &mut usize, &end: &usize) -> Option<Range<usize>> {
-            Some(std::mem::replace(start, end)..end)
-        }
         let target_words = self.target_words.iter().scan(0, lens_to_ranges);
         let enterd_words = self.enterd_words.iter().scan(0, lens_to_ranges);
-
-        // let target_words_dbg = format!("{:#?}", target_words.clone().collect_vec());
-        // if target_words_dbg.len() > 2 {
-        //     dbg!(target_words_dbg);
-        // };
 
         // TODO: wrapping might be able to be done by this
         // https://docs.rs/tui/0.15.0/tui/widgets/struct.Wrap.html
@@ -421,14 +439,32 @@ impl App {
 
         f.render_widget(outer, size);
 
-        if self.running == TestState::Running {
-            f.render_widget(widgets::Clear, chunks[0])
-        };
-        f.render_widget(block("WPM"), chunks[0]);
-        if self.running == TestState::Running {
-            f.render_widget(widgets::Clear, chunks[1])
-        };
-        f.render_widget(block("Graph"), chunks[1]);
+        {
+            if self.running == TestState::Running {
+                f.render_widget(widgets::Clear, chunks[0])
+            };
+            let frame = block("WPM");
+            let tws = self.get_target_words().collect_vec();
+            let ews = self.get_enterd_words().collect_vec();
+            let correct = izip!(tws, ews).filter(|(x, y)| x == y).count() as f64;
+            let tspan = (self.now - self.start).as_secs_f64() / 60.;
+            let par = Paragraph::new(vec![
+                Spans::from(Span::raw("Hello world")),                     //
+                Spans::from(Span::raw("Hello world")),                     //
+                Spans::from(Span::raw(format!("{:.0}", correct / tspan))), //
+            ])
+            .block(frame)
+            .wrap(Wrap { trim: false });
+            f.render_widget(par, chunks[0]);
+        }
+
+        {
+            if self.running == TestState::Running {
+                f.render_widget(widgets::Clear, chunks[1])
+            };
+            let frame = block("Graph");
+            f.render_widget(block("Graph"), chunks[1]);
+        }
     }
 }
 
@@ -473,4 +509,8 @@ fn merge_word2<'a>(target: &'a str, enterd: &'a str) -> (Cow<'a, str>, usize, us
         // [enterd[..j] == target[..i]] [enterd[i..]]
         //                             ^ i == j      ^ enterd.len()
     }
+}
+
+fn lens_to_ranges(start: &mut usize, &end: &usize) -> Option<Range<usize>> {
+    Some(std::mem::replace(start, end)..end)
 }
