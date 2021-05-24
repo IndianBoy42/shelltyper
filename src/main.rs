@@ -238,7 +238,11 @@ impl App {
             self.correct = correct;
             let (correct, total) = (correct as f64, total as f64);
             let tspan = (self.now - self.start).as_secs_f64();
-            self.accuracy = correct * 100. / total;
+            self.accuracy = if total == 0. {
+                0.
+            } else {
+                correct * 100. / total
+            };
             match self.target_type {
                 TargetStringType::Timed(tot) => {
                     self.progress = tspan * 100. / (tot as f64);
@@ -250,7 +254,9 @@ impl App {
             self.wpm = correct / tspan * 60.;
 
             if (self.now - self.prev_hist).as_millis() > 100 {
-                self.accuracy_history.push((self.progress, self.accuracy));
+                if self.accuracy > 0.0 {
+                    self.accuracy_history.push((self.progress, self.accuracy));
+                }
                 self.wpm_history.push((self.progress, self.wpm));
 
                 self.prev_hist = Instant::now();
