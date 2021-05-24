@@ -313,6 +313,7 @@ impl App {
         self.now = self.start;
         self.prev_hist = self.start;
         self.accuracy_history.clear();
+        self.wpm_history.clear();
     }
     fn end_test(&mut self) {
         self.running = TestState::Post;
@@ -642,15 +643,15 @@ impl App {
         };
         let frame = self.block();
         let par = Paragraph::new(vec![
-            Spans::from(Span::raw(format!("{:.0}", self.wpm))), //
-            Spans::from(Span::raw(format!("{:.0}%", self.accuracy))), //
-            Spans::from(Span::raw(format!("{:.0}%", self.progress))), //
+            Spans::from(Span::raw(format!("WPM: {:.0}", self.wpm))), //
+            Spans::from(Span::raw(format!("ACC: {:.0}%", self.accuracy))), //
+            // Spans::from(Span::raw(format!("PRG: {:.0}%", self.progress))), //
             Spans::from(Span::raw(format!(
-                "{:01.0}:{:02.0}s",
+                "TIME {:01.0}:{:02.0}s",
                 (self.now - self.start).as_secs() / 60,
                 (self.now - self.start).as_secs().rem(60)
             ))), //
-            Spans::from(Span::raw(format!("{:.0}w", self.correct))), //
+            Spans::from(Span::raw(format!("WORDS {:.0}", self.correct))), //
         ])
         .block(frame)
         .wrap(Wrap { trim: false });
