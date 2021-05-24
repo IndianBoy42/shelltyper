@@ -9,6 +9,7 @@ use itertools::{izip, Itertools};
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand::thread_rng;
+use std::convert::TryInto;
 use std::io::stdout;
 use std::ops::{Range, Rem};
 use std::sync::mpsc::{self, Receiver};
@@ -34,15 +35,30 @@ enum Event {
 const HELP: &str = "\
 monkeytype in the shell
 
-Usage: shelltyper
+Usage: shelltyper [OPTIONS]
 
-No arguments yet
+    -t, --timed            SECONDS    Typing test with time limit
+    -w, --words            NUM_WORDS  Typing test with fixed number of words
+      By default it is a test with 30 words
+    -H, --chart-height     ROWS       Height of the Chart widget [default: 10]
+    -M, --chart-max-wpm    NUMBER     Upper bound of WPM in the Chart [default: 150]
+    -N, --chart-min-wpm    NUMBER     Lower bound of WPM in the Chart [default: 50]
 ";
 #[derive(Debug)]
-struct Args {}
+struct Args {
+    target_type: TargetStringType,
+    chart_max_wpm: usize,
+    chart_min_wpm: usize,
+    chart_height: usize,
+}
 impl Default for Args {
     fn default() -> Self {
-        Args {}
+        Args {
+            target_type: TargetStringType::default(),
+            chart_max_wpm: 150,
+            chart_height: 10,
+            chart_min_wpm: 50,
+        }
     }
 }
 impl Args {
@@ -56,13 +72,35 @@ impl Args {
 
         let dargs = Self::default();
 
-        Args { ..dargs }
+        let timed = pargs
+            .opt_value_from_str(["-t", "--timed"])
+            .unwrap()
+            .map(|x| TargetStringType::Timed(x));
+        let words = pargs
+            .opt_value_from_str(["-w", "--words"])
+            .unwrap()
+            .map(|x| TargetStringType::Words(x));
+
+        Args {
+            target_type: timed.or(words).unwrap_or(dargs.target_type),
+            chart_height: pargs
+                .opt_value_from_str(["-H", "--chart-height"])
+                .unwrap()
+                .unwrap_or(dargs.chart_height),
+            chart_min_wpm: pargs
+                .opt_value_from_str(["-N", "--chart-min-wpm"])
+                .unwrap()
+                .unwrap_or(dargs.chart_min_wpm),
+            chart_max_wpm: pargs
+                .opt_value_from_str(["-M", "--chart-max-wpm"])
+                .unwrap()
+                .unwrap_or(dargs.chart_max_wpm),
+            ..dargs
+        }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Hello, world!");
-
     let args = Args::parse_env();
 
     enable_raw_mode()?;
@@ -176,7 +214,7 @@ struct App {
 impl App {
     fn new(args: Args) -> App {
         let mut app = App {
-            target_type: TargetStringType::default(),
+            target_type: args.target_type,
             target_str: String::new(),
             enterd_str: String::new(),
             target_words: Vec::new(),
@@ -299,6 +337,8 @@ impl App {
                             self.enterd_words.push(*self.enterd_words.last().unwrap());
                         }
                     }
+                } else if self.running == TestState::Post {
+                    self.new_test();
                 }
             }
             KeyCode::Char(c) => {
@@ -320,7 +360,13 @@ impl App {
                 None => {}
             },
             KeyCode::Esc => self.new_test(),
-            KeyCode::Tab => self.end_test(),
+            KeyCode::Tab => {
+                if self.running != TestState::Post {
+                    self.end_test()
+                } else {
+                    self.new_test()
+                }
+            }
             // TODO: any more functions needed?
             KeyCode::Left => {}
             KeyCode::Up => {}
@@ -343,9 +389,9 @@ impl App {
         let chunks = Layout::default()
             .direction(tui::layout::Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3 + 10),
-                Constraint::Min(3 + 3),
+                Constraint::Length(2 + 1),
+                Constraint::Length((2 + self.args.chart_height).try_into().unwrap()),
+                Constraint::Min(2 + 3),
             ])
             .split(f.size());
 
@@ -369,7 +415,10 @@ impl App {
 
     fn title_widget(&self, f: &mut Frame<Backend>, size: Rect) {
         let par = Paragraph::new(vec![Spans::from(vec![
-            Span::raw("Hello World "),
+            match self.target_type {
+                TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
+                TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
+            },
             Span::styled(
                 format!(
                     "{}",
@@ -570,7 +619,7 @@ impl App {
                 Axis::default()
                     // .title(Span::styled("Y Axis", Style::default().fg(Color::Red)))
                     .style(Style::default().fg(Color::White))
-                    .bounds([0.0, 150.0])
+                    .bounds([self.args.chart_min_wpm as _, self.args.chart_max_wpm as _])
                     .labels(
                         ["0.0", "50.0", "100.0", "150.0"]
                             .iter()
