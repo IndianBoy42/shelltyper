@@ -418,6 +418,10 @@ impl App {
         let completed_part_style = Style::default().bg(Color::Black).fg(Color::Green);
         let wrong_part_style = Style::default().bg(Color::Black).fg(Color::Red);
         let incomplete_part_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+        let ongoing_part_style = Style::default()
+            .bg(Color::Black)
+            .fg(Color::Gray)
+            .add_modifier(Modifier::BOLD);
 
         let target_words = self.target_words.iter().scan(0, lens_to_ranges);
         let enterd_words = self.enterd_words.iter().scan(0, lens_to_ranges);
@@ -452,7 +456,7 @@ impl App {
                     let spincomplete = Span::styled(
                         incomplete,
                         if i == self.enterd_words.len() - 1 {
-                            incomplete_part_style.add_modifier(Modifier::BOLD)
+                            ongoing_part_style
                         } else {
                             incomplete_part_style
                         },
