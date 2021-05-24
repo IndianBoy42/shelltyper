@@ -9,10 +9,8 @@ use itertools::{izip, Itertools};
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand::thread_rng;
-use std::borrow::Cow;
-use std::fmt::format;
 use std::io::stdout;
-use std::ops::Range;
+use std::ops::{Range, Rem};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,12 +76,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rx = input_handling_thread(&terminal);
 
-    let mut app = App::new();
+    let mut app = App::new(args);
 
     terminal.clear()?;
 
     loop {
-        // Draw everything:
         terminal.draw(|f| app.draw(f))?;
 
         match rx.recv()? {
@@ -110,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn input_handling_thread(_terminal: &Terminal<Backend>) -> Receiver<Event> {
     let (tx, rx) = mpsc::channel();
 
-    let tick_rate = Duration::from_millis(10);
+    let tick_rate = Duration::from_millis(1000 / 60);
     thread::spawn(move || {
         let mut last_tick = Instant::now();
         loop {
@@ -139,8 +136,16 @@ fn input_handling_thread(_terminal: &Terminal<Backend>) -> Receiver<Event> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum TargetStringType {
-    Infinite,
+    /// Seconds
+    Timed(usize),
     Words(usize),
+}
+
+impl Default for TargetStringType {
+    fn default() -> Self {
+        // TargetStringType::Words(30)
+        TargetStringType::Timed(15)
+    }
 }
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum TestState {
@@ -161,15 +166,17 @@ struct App {
     prev_hist: Instant,
     now: Instant,
     wpm: f64,
+    correct: usize,
     accuracy: f64,
     accuracy_history: Vec<(f64, f64)>,
     wpm_history: Vec<(f64, f64)>,
     progress: f64,
+    args: Args,
 }
 impl App {
-    fn new() -> App {
+    fn new(args: Args) -> App {
         let mut app = App {
-            target_type: TargetStringType::Infinite,
+            target_type: TargetStringType::default(),
             target_str: String::new(),
             enterd_str: String::new(),
             target_words: Vec::new(),
@@ -183,14 +190,18 @@ impl App {
             accuracy_history: Vec::with_capacity(100),
             wpm_history: Vec::with_capacity(100),
             progress: 0.,
+            args,
+            correct: 0,
         };
-        app.new_target_string(TargetStringType::Infinite);
+        app.new_target_string(app.target_type);
         app
     }
 
     fn new_target_string(&mut self, ty: TargetStringType) {
         let words = match ty {
-            TargetStringType::Infinite => 30, // TODO:LOL
+            // Generate enough words for 300wpm for the time
+            // TODO: handle Timed by continously generating new words
+            TargetStringType::Timed(n) => n * 300 / 60,
             TargetStringType::Words(n) => n,
         };
         let mut rng = thread_rng();
@@ -211,35 +222,61 @@ impl App {
     }
 
     fn target_is_infinite(&self) -> bool {
-        matches!(self.target_type, TargetStringType::Infinite)
+        matches!(self.target_type, TargetStringType::Timed(_))
     }
 
     fn on_tick(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.running == TestState::Running {
-            // TODO: update stats
             self.now = Instant::now();
 
             let tws = self.get_target_words().collect_vec();
             let ews = self.get_enterd_words().collect_vec();
-            let (correct, total) = izip!(tws, ews).fold((0, 0), |(corr, tot), (t, e)| {
-                (
-                    corr + if t == e { 1 } else { 0 },
-                    tot + if t.len() == 0 { 0 } else { 1 },
-                )
+            let ews = &ews[..ews.len() - 1]; // The last word is the one we are typing, so leave it out
+            let (correct, total) = izip!(tws, ews).fold((0, 0), |(corr, tot), (t, &e)| {
+                (corr + if t == e { 1 } else { 0 }, tot + 1)
             });
+            self.correct = correct;
             let (correct, total) = (correct as f64, total as f64);
-            let tspan = (self.now - self.start).as_secs_f64() / 60.;
-            self.accuracy = correct * 100. / total; // FIXME: accuracy has some weirdness
-            self.progress = total * 100. / self.target_words.len() as f64;
-            self.wpm = correct / tspan;
+            let tspan = (self.now - self.start).as_secs_f64();
+            self.accuracy = correct * 100. / total;
+            match self.target_type {
+                TargetStringType::Timed(tot) => {
+                    self.progress = tspan * 100. / (tot as f64);
+                }
+                TargetStringType::Words(_) => {
+                    self.progress = total * 100. / self.target_words.len() as f64;
+                }
+            }
+            self.wpm = correct / tspan * 60.;
+
             if (self.now - self.prev_hist).as_millis() > 100 {
                 self.accuracy_history.push((self.progress, self.accuracy));
                 self.wpm_history.push((self.progress, self.wpm));
 
                 self.prev_hist = Instant::now();
             }
+
+            if self.progress >= 100. {
+                self.end_test()
+            }
         }
         Ok(())
+    }
+
+    fn start_test(&mut self) {
+        self.running = TestState::Running;
+        self.start = Instant::now();
+        self.now = self.start;
+        self.prev_hist = self.start;
+        self.accuracy_history.clear();
+    }
+    fn end_test(&mut self) {
+        self.running = TestState::Post;
+    }
+    fn new_test(&mut self) {
+        self.running = TestState::Pre;
+        self.now = Instant::now();
+        self.new_target_string(self.target_type)
     }
 
     fn on_key(&mut self, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
@@ -248,9 +285,10 @@ impl App {
                 if self.running == TestState::Running {
                     if self.enterd_str.chars().last() != Some(' ') {
                         self.enterd_str.push(' ');
-                        *self.enterd_words.last_mut().unwrap() += 1;
+                        // *self.enterd_words.last_mut().unwrap() += 1;
+                        *self.enterd_words.last_mut().unwrap() = self.enterd_str.len();
                         if self.enterd_words.len() == self.target_words.len() {
-                            self.running = TestState::Post;
+                            self.end_test()
                         } else {
                             self.enterd_words.push(*self.enterd_words.last().unwrap());
                         }
@@ -262,36 +300,21 @@ impl App {
                     self.enterd_str.push(c);
                     *self.enterd_words.last_mut().unwrap() = self.enterd_str.len();
                     if self.running == TestState::Pre {
-                        self.running = TestState::Running;
-                        self.start = Instant::now();
-                        self.now = self.start;
-                        self.prev_hist = self.start;
-                        self.accuracy_history.clear();
+                        self.start_test()
                     }
                 }
             }
-            KeyCode::Backspace => {
-                match self.enterd_str.pop() {
-                    Some(' ') => {
-                        self.enterd_str.push(' ');
-                    }
-                    Some(_) => {
-                        *self.enterd_words.last_mut().unwrap() -= 1;
-                    }
-                    None => {
-                        // TODO: reset timer? nah
-                    }
+            KeyCode::Backspace => match self.enterd_str.pop() {
+                Some(' ') => {
+                    self.enterd_str.push(' ');
                 }
-            }
-            KeyCode::Esc => {
-                // Reset
-                self.running = TestState::Pre;
-                self.now = Instant::now();
-                self.new_target_string(TargetStringType::Infinite)
-            }
-            KeyCode::Tab => {
-                self.running = TestState::Post;
-            }
+                Some(_) => {
+                    *self.enterd_words.last_mut().unwrap() -= 1;
+                }
+                None => {}
+            },
+            KeyCode::Esc => self.new_test(),
+            KeyCode::Tab => self.end_test(),
             // TODO: any more functions needed?
             KeyCode::Left => {}
             KeyCode::Up => {}
@@ -382,11 +405,13 @@ impl App {
         let inner = block.inner(size);
         let width = inner.width;
 
-        let completed_word_style = Style::default().bg(Color::Black).fg(Color::White);
+        let completed_word_style = Style::default()
+            .bg(Color::Black)
+            .fg(Color::White)
+            .add_modifier(Modifier::UNDERLINED);
         let completed_part_style = Style::default().bg(Color::Black).fg(Color::Green);
         let wrong_part_style = Style::default().bg(Color::Black).fg(Color::Red);
         let incomplete_part_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
-        let future_word_style = Style::default().fg(Color::Gray);
 
         let target_words = self.target_words.iter().scan(0, lens_to_ranges);
         let enterd_words = self.enterd_words.iter().scan(0, lens_to_ranges);
@@ -405,19 +430,27 @@ impl App {
                     unreachable!(STRINGS_CLEARED_BEFORE_FINISH)
                 }
             })
+            .enumerate()
             .fold(
                 (vec![vec![]], 0),
-                |(mut lines, linelen), (complete, wrong, incomplete)| {
+                |(mut lines, linelen), (i, (complete, wrong, incomplete))| {
                     let spcomplete = Span::styled(
                         complete,
-                        if wrong.len() == 0 && incomplete.len() == 0 {
+                        if wrong.len() == 0 && incomplete.len() <= 1 {
                             completed_word_style
                         } else {
                             completed_part_style
                         },
                     );
                     let spwrong = Span::styled(wrong, wrong_part_style);
-                    let spincomplete = Span::styled(incomplete, incomplete_part_style);
+                    let spincomplete = Span::styled(
+                        incomplete,
+                        if i == self.enterd_words.len() - 1 {
+                            incomplete_part_style.add_modifier(Modifier::BOLD)
+                        } else {
+                            incomplete_part_style
+                        },
+                    );
 
                     let wordlen = complete.len() + wrong.len() + incomplete.len();
 
@@ -442,30 +475,11 @@ impl App {
                 },
             );
 
-        // lines.push(Spans::from(Span::raw(target_words_dbg)));
-
         let lines = lines
             .into_iter()
             .map(|line| Spans::from(line))
             .collect_vec();
         let par = Paragraph::new(lines);
-        // let par = Paragraph::new(vec![Spans::from(vec![
-        //     Span::raw("Hello World\n"),
-        //     Span::styled(
-        //         "This is stylish",
-        //         Style::default().fg(Color::Green).bg(Color::Red),
-        //     ),
-        // ])]);
-        // let par = Paragraph::new(
-        //     words
-        //         .map(|line| {
-        //             Spans::from(Span::styled(
-        //                 line.into_iter().join(" "),
-        //                 Style::default().bg(Color::White).fg(Color::Black),
-        //             ))
-        //         })
-        //         .collect_vec(),
-        // );
 
         f.render_widget(par.block(block), size)
     }
@@ -487,92 +501,105 @@ impl App {
 
         f.render_widget(outer, size);
 
-        {
-            if self.running == TestState::Running {
-                f.render_widget(widgets::Clear, chunks[0])
-            };
-            let frame = block("WPM");
-            let par = Paragraph::new(vec![
-                Spans::from(Span::raw(format!("{:.0}", self.wpm))), //
-                Spans::from(Span::raw(format!("{:.0}%", self.accuracy))), //
-                Spans::from(Span::raw(format!("{:.0}%", self.progress))), //
-            ])
-            .block(frame)
-            .wrap(Wrap { trim: false });
-            f.render_widget(par, chunks[0]);
-        }
+        self.text_stats_widget(f, chunks[0]);
 
-        {
-            if self.running == TestState::Running {
-                f.render_widget(widgets::Clear, chunks[1])
-            };
+        self.chart_stats_widget(f, chunks[1]);
+    }
 
-            let oarea = chunks[1];
-            let frame = block("Graph");
-            let area = frame.inner(oarea);
+    fn chart_stats_widget(&self, f: &mut Frame<CrosstermBackend<std::io::Stdout>>, area: Rect) {
+        if self.running == TestState::Running {
+            f.render_widget(widgets::Clear, area)
+        };
+        let oarea = area;
+        let frame = self.block().title("Graph");
+        let area = frame.inner(oarea);
+        let chunks = Layout::default()
+            .direction(tui::layout::Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        let progress = LineGauge::default()
+            //.block(Block::default().borders(Borders::ALL).title("Progress"))
+            .gauge_style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .line_set(symbols::line::THICK)
+            .ratio((self.progress / 100.).min(1.));
+        f.render_widget(progress, chunks[0]);
+        let datasets = vec![
+            Dataset::default()
+                .name("accuracy")
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Magenta))
+                .data(&self.accuracy_history),
+            Dataset::default()
+                .name("wpm")
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Cyan))
+                .data(&self.wpm_history),
+        ];
+        let line_graph = Chart::new(datasets)
+            .x_axis(
+                Axis::default()
+                    // .title(Span::styled("X Axis", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, 100.0])
+                    .labels(
+                        ["0.0", "50.0", "100.0"]
+                            .iter()
+                            .cloned()
+                            .map(Span::from)
+                            .collect(),
+                    ),
+            )
+            .y_axis(
+                Axis::default()
+                    // .title(Span::styled("Y Axis", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, 150.0])
+                    .labels(
+                        ["0.0", "50.0", "100.0", "150.0"]
+                            .iter()
+                            .cloned()
+                            .map(Span::from)
+                            .collect(),
+                    ),
+            );
+        f.render_widget(line_graph, chunks[1]);
+        f.render_widget(frame, oarea);
+    }
 
-            let chunks = Layout::default()
-                .direction(tui::layout::Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(area);
+    fn text_stats_widget(&self, f: &mut Frame<CrosstermBackend<std::io::Stdout>>, area: Rect) {
+        if self.running == TestState::Running {
+            f.render_widget(widgets::Clear, area)
+        };
+        let frame = self.block();
+        let par = Paragraph::new(vec![
+            Spans::from(Span::raw(format!("{:.0}", self.wpm))), //
+            Spans::from(Span::raw(format!("{:.0}%", self.accuracy))), //
+            Spans::from(Span::raw(format!("{:.0}%", self.progress))), //
+            Spans::from(Span::raw(format!(
+                "{:01.0}:{:02.0}s",
+                (self.now - self.start).as_secs() / 60,
+                (self.now - self.start).as_secs().rem(60)
+            ))), //
+            Spans::from(Span::raw(format!("{:.0}w", self.correct))), //
+        ])
+        .block(frame)
+        .wrap(Wrap { trim: false });
+        f.render_widget(par, area);
+    }
 
-            let progress = LineGauge::default()
-                //.block(Block::default().borders(Borders::ALL).title("Progress"))
-                .gauge_style(
-                    Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .line_set(symbols::line::THICK)
-                .ratio(self.progress / 100.);
-            f.render_widget(progress, chunks[0]);
-
-            let datasets = vec![
-                Dataset::default()
-                    .name("accuracy")
-                    .marker(symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Magenta))
-                    .data(&self.accuracy_history),
-                Dataset::default()
-                    .name("wpm")
-                    .marker(symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Cyan))
-                    .data(&self.wpm_history),
-            ];
-            let line_graph = Chart::new(datasets)
-                .x_axis(
-                    Axis::default()
-                        // .title(Span::styled("X Axis", Style::default().fg(Color::Red)))
-                        .style(Style::default().fg(Color::White))
-                        .bounds([0.0, 100.0])
-                        .labels(
-                            ["0.0", "50.0", "100.0"]
-                                .iter()
-                                .cloned()
-                                .map(Span::from)
-                                .collect(),
-                        ),
-                )
-                .y_axis(
-                    Axis::default()
-                        // .title(Span::styled("Y Axis", Style::default().fg(Color::Red)))
-                        .style(Style::default().fg(Color::White))
-                        .bounds([0.0, 100.0])
-                        .labels(
-                            ["0.0", "50.0", "100.0"]
-                                .iter()
-                                .cloned()
-                                .map(Span::from)
-                                .collect(),
-                        ),
-                );
-            f.render_widget(line_graph, chunks[1]);
-
-            f.render_widget(frame, oarea);
-        }
+    fn block(&self) -> tui::widgets::Block<'static> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White))
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(Color::Black))
     }
 }
 
@@ -581,11 +608,10 @@ fn merge_word<'a>(target: &'a str, enterd: &'a str) -> (&'a str, &'a str, &'a st
     let first_non_match =
         izip!(target.char_indices(), enterd.char_indices()).find(|&((_, t), (_, u))| t != u);
     if let Some(((i, _), (j, _))) = first_non_match {
-        let mut s = String::with_capacity(target.len() + enterd.len());
-        s.push_str(&enterd);
-        s.push_str(&target[i..]);
+        let enterd = enterd.strip_suffix(' ').unwrap_or(enterd);
         (&enterd[..j], &enterd[j..], &target[i..])
     } else if target.len() >= enterd.len() {
+        let enterd = enterd.strip_suffix(' ').unwrap_or(enterd);
         let j = enterd.len();
         (enterd, "", &target[j..])
     } else {
