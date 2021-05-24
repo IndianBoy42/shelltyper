@@ -337,9 +337,10 @@ impl App {
                             self.enterd_words.push(*self.enterd_words.last().unwrap());
                         }
                     }
-                } else if self.running == TestState::Post {
-                    self.new_test();
                 }
+                // else if self.running == TestState::Post {
+                //     self.new_test();
+                // }
             }
             KeyCode::Char(c) => {
                 if self.running != TestState::Post {
@@ -621,11 +622,14 @@ impl App {
                     .style(Style::default().fg(Color::White))
                     .bounds([self.args.chart_min_wpm as _, self.args.chart_max_wpm as _])
                     .labels(
-                        ["0.0", "50.0", "100.0", "150.0"]
-                            .iter()
-                            .cloned()
-                            .map(Span::from)
-                            .collect(),
+                        [
+                            self.args.chart_min_wpm.to_string(),
+                            self.args.chart_max_wpm.to_string(),
+                        ]
+                        .iter()
+                        .cloned()
+                        .map(Span::from)
+                        .collect(),
                     ),
             );
         f.render_widget(line_graph, chunks[1]);
