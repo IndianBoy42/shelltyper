@@ -462,19 +462,14 @@ impl App {
             .fg(Color::Gray)
             .add_modifier(Modifier::BOLD);
 
-        let target_words = self.target_words.iter().scan(0, lens_to_ranges);
-        let enterd_words = self.enterd_words.iter().scan(0, lens_to_ranges);
-
         // TODO: wrapping might be able to be done by this
         // https://docs.rs/tui/0.15.0/tui/widgets/struct.Wrap.html
-
-        let (lines, _) = target_words
-            .zip_longest(enterd_words)
+        let (lines, _) = self
+            .get_target_words()
+            .zip_longest(self.get_enterd_words())
             .map(|pair| match pair {
-                itertools::EitherOrBoth::Both(target, enterd) => {
-                    merge_word(&self.target_str[target], &self.enterd_str[enterd])
-                }
-                itertools::EitherOrBoth::Left(target) => merge_word(&self.target_str[target], ""),
+                itertools::EitherOrBoth::Both(target, enterd) => merge_word(target, enterd),
+                itertools::EitherOrBoth::Left(target) => merge_word(target, ""),
                 itertools::EitherOrBoth::Right(_enterd) => {
                     unreachable!(STRINGS_CLEARED_BEFORE_FINISH)
                 }
