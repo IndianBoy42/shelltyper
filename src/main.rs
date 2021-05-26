@@ -15,7 +15,7 @@ use std::ops::{Range, Rem};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
-use tui::layout::{Constraint, Layout, Rect};
+use tui::layout::{Alignment, Constraint, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans};
 use tui::widgets::{
@@ -416,30 +416,49 @@ impl App {
     }
 
     fn title_widget(&self, f: &mut Frame<Backend>, size: Rect) {
-        let par = Paragraph::new(vec![Spans::from(vec![
-            match self.target_type {
-                TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
-                TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
-            },
-            Span::styled(
-                format!(
-                    "{}",
-                    match self.running {
-                        TestState::Pre => {
-                            "Ready to Go"
-                        }
-                        TestState::Running => {
-                            "Test Running"
-                        }
-                        TestState::Post => {
-                            "Test Complete"
-                        }
-                    }
-                ),
-                Style::default().fg(Color::Green).bg(Color::Red),
+        // <<<<<<< HEAD
+        //         let par = Paragraph::new(vec![Spans::from(vec![
+        //             match self.target_type {
+        //                 TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
+        //                 TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
+        //             },
+        //             Span::styled(
+        //                 format!(
+        //                     "{}",
+        //                     match self.running {
+        //                         TestState::Pre => {
+        //                             "Ready to Go"
+        //                         }
+        //                         TestState::Running => {
+        //                             "Test Running"
+        //                         }
+        //                         TestState::Post => {
+        //                             "Test Complete"
+        //                         }
+        //                     }
+        //                 ),
+        //                 Style::default().fg(Color::Green).bg(Color::Red),
+        // =======
+        let par = Paragraph::new(vec![Spans::from(vec![match self.target_type {
+            TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
+            TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
+        }])]);
+        let (msg, fmt) = match self.running {
+            TestState::Pre => (
+                "Ready to Go",
+                Style::default().fg(Color::Black).bg(Color::Yellow),
             ),
-        ])])
-        .wrap(Wrap { trim: false });
+            TestState::Running => (
+                "Test Running",
+                Style::default().fg(Color::Black).bg(Color::Green),
+            ),
+            TestState::Post => (
+                "Test Complete",
+                Style::default().fg(Color::White).bg(Color::Red),
+            ),
+        };
+        let status = Paragraph::new(vec![Spans::from(vec![Span::styled(msg, fmt)])])
+            .alignment(Alignment::Right);
         let block = Block::default()
             .title("Title")
             .borders(Borders::ALL)
@@ -447,7 +466,9 @@ impl App {
             .border_type(BorderType::Rounded)
             .style(Style::default().bg(Color::Black));
 
-        f.render_widget(par.block(block), size)
+        let inner = block.inner(size);
+        f.render_widget(par.block(block), size);
+        f.render_widget(status, inner);
     }
     fn text_widget(&self, f: &mut Frame<Backend>, size: Rect) {
         const STRINGS_CLEARED_BEFORE_FINISH: &str =
