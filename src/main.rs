@@ -416,29 +416,6 @@ impl App {
     }
 
     fn title_widget(&self, f: &mut Frame<Backend>, size: Rect) {
-        // <<<<<<< HEAD
-        //         let par = Paragraph::new(vec![Spans::from(vec![
-        //             match self.target_type {
-        //                 TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
-        //                 TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
-        //             },
-        //             Span::styled(
-        //                 format!(
-        //                     "{}",
-        //                     match self.running {
-        //                         TestState::Pre => {
-        //                             "Ready to Go"
-        //                         }
-        //                         TestState::Running => {
-        //                             "Test Running"
-        //                         }
-        //                         TestState::Post => {
-        //                             "Test Complete"
-        //                         }
-        //                     }
-        //                 ),
-        //                 Style::default().fg(Color::Green).bg(Color::Red),
-        // =======
         let par = Paragraph::new(vec![Spans::from(vec![match self.target_type {
             TargetStringType::Timed(n) => Span::raw(format!("Time Limit: {} ", n)),
             TargetStringType::Words(n) => Span::raw(format!("Words: {} ", n)),
@@ -459,27 +436,17 @@ impl App {
         };
         let status = Paragraph::new(vec![Spans::from(vec![Span::styled(msg, fmt)])])
             .alignment(Alignment::Right);
-        let block = Block::default()
-            .title("Title")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White))
-            .border_type(BorderType::Rounded)
-            .style(Style::default().bg(Color::Black));
-
+        let block = self.block();
         let inner = block.inner(size);
         f.render_widget(par.block(block), size);
         f.render_widget(status, inner);
     }
+
     fn text_widget(&self, f: &mut Frame<Backend>, size: Rect) {
         const STRINGS_CLEARED_BEFORE_FINISH: &str =
             "BUG: Clear the target, user strings when they are complete before drawing";
-        let block = Block::default()
-            .title("Text")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White))
-            .border_type(BorderType::Rounded)
-            .style(Style::default().bg(Color::Black));
 
+        let block = self.block().title("Test");
         let inner = block.inner(size);
         let width = inner.width;
 
@@ -565,17 +532,9 @@ impl App {
 
         f.render_widget(par.block(block), size)
     }
-    fn stats_widget(&self, f: &mut Frame<Backend>, size: Rect) {
-        let block = |title| {
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::White))
-                .border_type(BorderType::Rounded)
-                .style(Style::default().bg(Color::Black))
-        };
 
-        let outer = block("Stats");
+    fn stats_widget(&self, f: &mut Frame<Backend>, size: Rect) {
+        let outer = self.block().title("Stats");
         let chunks = Layout::default()
             .direction(tui::layout::Direction::Horizontal)
             .constraints([Constraint::Length(20), Constraint::Min(0)])
@@ -600,7 +559,6 @@ impl App {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
         let progress = LineGauge::default()
-            //.block(Block::default().borders(Borders::ALL).title("Progress"))
             .gauge_style(
                 Style::default()
                     .fg(Color::White)
